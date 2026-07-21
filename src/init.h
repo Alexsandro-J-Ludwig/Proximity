@@ -9,7 +9,6 @@
 #include <PubSubClient.h>
 #include "Struct.h"
 
-// Avisa ao compilador que essas variáveis existem em algum lugar (.cpp)
 extern Motor motor_direito;
 extern Motor motor_esquerdo;
 extern Adafruit_VL53L0X lox;
@@ -19,7 +18,6 @@ extern PubSubClient client;
 
 extern const char *mqtt_server;
 
-// Protótipos das funções de inicialização
 void setup_sensor();
 void setup_servo();
 void setup_motores();

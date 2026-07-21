@@ -7,7 +7,7 @@
 #include "PID.h"
 #include "init.h"
 
-unsigned long servoDelay = 90;
+unsigned long servoDelay = 150;
 unsigned long servoTimer = 0;
 unsigned long motorDelay = 2;
 unsigned long motorTimer = 0;
@@ -39,7 +39,6 @@ void tarefaCore0(void *pvParameters)
   {
     unsigned long currentMillis = millis();
 
-    // Faz a leitura do sensor ToF
     VL53L0X_RangingMeasurementData_t measure;
 
     lox.rangingTest(&measure, false);
@@ -58,23 +57,19 @@ void tarefaCore0(void *pvParameters)
       tofValues[tofIndex] = tofValue;
       meuServo.write(angulos[tofIndex]);
 
-      // Guarda se ESTE índice (que acabamos de escrever) é uma ponta da varredura.
-      // Precisa ser checado ANTES de mover o índice, senão o valor da ponta
-      // (36° ou 180°) nunca é considerado no cálculo do melhor ângulo.
       bool cheguei_na_ponta = (tofIndex == 0 || tofIndex == 5);
 
-      // Atualiza o índice para o próximo ciclo
       if (servoDirection)
       {
         tofIndex++;
         if (tofIndex >= 5)
-          servoDirection = false; // Bateu no fim (180°) inverter
+          servoDirection = false;
       }
       else
       {
         tofIndex--;
         if (tofIndex <= 0)
-          servoDirection = true; // Bateu no começo (0°) inverter
+          servoDirection = true;
       }
 
       if (cheguei_na_ponta)
@@ -90,7 +85,7 @@ void tarefaCore0(void *pvParameters)
             tempMaiorDistancia = tofValues[c];
             tempMelhorAngulo = angulos[c];
           }
-          // Só aceita a menor distância se for maior que 0 (ignora falhas e fantasmas)
+
           if (tofValues[c] > 0 && tofValues[c] < tempMenorDistancia)
           {
             tempMenorDistancia = tofValues[c];
@@ -105,7 +100,6 @@ void tarefaCore0(void *pvParameters)
           xSemaphoreGive(xMutexRadar);
         }
 
-        // Limpa o array para a próxima varredura
         for (int r = 0; r < 6; r++)
         {
           tofValues[r] = 0;
@@ -150,24 +144,22 @@ void loop()
       xSemaphoreGive(xMutexRadar);
     }
 
-    if ((maiorDistancia < 300 || menorDistancia < 100) && !voltando)
+    if ((maiorDistancia < 200 || menorDistancia < 80) && !voltando)
     {
       estadoAtual = Estados::VOLTAR;
       voltando = true;
-      voltarTimer = currentTime; // marca o momento em que entrou em ré
+      voltarTimer = currentTime;
     }
 
-    // Sai da ré após 500 ms
     if (voltando && (currentTime - voltarTimer >= voltarDelay))
     {
       voltando = false;
 
-      // Decide o próximo estado
-      if (maiorDistancia < 700)
+      if (maiorDistancia < 500)
         estadoAtual = Estados::AVANCAR;
-      else
-        estadoAtual = Estados::PROSSEGUIR;
-    }
+    //   else
+    //     estadoAtual = Estados::PROSSEGUIR;
+   }
 
     switch (estadoAtual)
     {
@@ -176,16 +168,21 @@ void loop()
       digitalWrite(motor_direito.driver.p.motorA_in2, LOW);
       digitalWrite(motor_esquerdo.driver.p.motorB_in1, LOW);
       digitalWrite(motor_esquerdo.driver.p.motorB_in2, HIGH);
-      pid(motor_direito, motor_esquerdo, currentTime, anguloAlvo, maiorDistancia);
-      break;
-    case Estados::VOLTAR:
-      digitalWrite(motor_direito.driver.p.motorA_in1, LOW);
-      digitalWrite(motor_direito.driver.p.motorA_in2, HIGH);
-      digitalWrite(motor_esquerdo.driver.p.motorB_in1, HIGH);
-      digitalWrite(motor_esquerdo.driver.p.motorB_in2, LOW);
+
+      Serial.print("Melhor: ");
+      Serial.println(melhorAngulo);
 
       pid(motor_direito, motor_esquerdo, currentTime, anguloAlvo, maiorDistancia);
       break;
+    // case Estados::VOLTAR:
+    //   digitalWrite(motor_direito.driver.p.motorA_in1, LOW);
+    //   digitalWrite(motor_direito.driver.p.motorA_in2, HIGH);
+    //   digitalWrite(motor_esquerdo.driver.p.motorB_in1, HIGH);
+    //   digitalWrite(motor_esquerdo.driver.p.motorB_in2, LOW);
+
+    //   analogWrite(motor_direito.pwm.p.enA, VELOCIDADE_BASE);
+    //   analogWrite(motor_esquerdo.pwm.p.enB, VELOCIDADE_BASE);
+    //   break;
     case Estados::PROSSEGUIR:
       digitalWrite(motor_direito.driver.p.motorA_in1, HIGH);
       digitalWrite(motor_direito.driver.p.motorA_in2, LOW);
