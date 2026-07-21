@@ -2,53 +2,101 @@
 #define PID_H
 #include "Struct.h"
 #include <Arduino.h>
+#include "PID.h"
+#include "init.h"
 
-extern Motor motores_direito;
-extern Motor motores_esquerdo;
+float Kp = 0.3;
+float Ki = 0.05;
+float Kd = 0.3;
+int VELOCIDADE_BASE = 60;
 
-float Kp = 0.5; // Ganho proporcional
-float Ki = 0.05; // Ganho integral
-float Kd = 0.2; // Ganho derivativo
+// Variáveis de estado do PID
+static unsigned long tempoUltimoCalculo = 0;
+static float erroAnterior = 0.0;
+static float integralErro = 0.0;
 
-int VELOCIDADE_BASE = 70;
+DirecaoDefinida direcao = DirecaoDefinida::Centro;
 
-unsigned long msTP = 0;
+bool pid(Motor &motor_direito, Motor &motor_esquerdo, unsigned long tempoAtual, int anguloAlvo, int maiorDistancia)
+{
+    float dt = (tempoAtual - tempoUltimoCalculo) / 1000.0;
 
-int anguloAnterior = 0;
+    // Proteção contra divisão por zero no primeiro ciclo ou chamadas rápidas demais
+    if (dt <= 0.0)
+        return false;
 
-void pid(Motor &motor_direito, Motor &motor_esquerdo, unsigned long msT, int angulo)
-{   
-    unsigned long tempoAnterior = msT - msTP;
-    if (tempoAnterior == 0)
-        tempoAnterior = 1;
-    msTP = msT;
-    
+    tempoUltimoCalculo = tempoAtual;
 
-    float erroD = angulo - 90.0;
-    float derivada = (erroD - anguloAnterior) / (tempoAnterior / 1000.0);
+    // Erro: Onde eu quero ir (90 graus, que é o centro) vs Onde o caminho livre está
+    float erroD = anguloAlvo - 90;
 
-    static float integralErro = 0;
+    if (abs(erroD) >= 45)
+    {
+        direcao = DirecaoDefinida::CurvaFechada;
+    }
+    else if (abs(erroD) >= 20)
+    {
+        direcao = DirecaoDefinida::curva;
+    }
+    else
+    {
+        direcao = DirecaoDefinida::Centro;
+    }
+
+    // Calcula as componentes do PID
+    float derivada = (erroD - erroAnterior) / dt;
 
     if (abs(erroD) > 0.1)
     {
-        integralErro = constrain(integralErro + erroD * (tempoAnterior / 1000.0), -50, 50);
+        // Acumula a integral com proteção contra "Windup" (limite de saturação)
+        integralErro = constrain(integralErro + (erroD * dt), -50.0, 50.0);
 
-        float saidaD = Kp * erroD + Ki * integralErro + Kd * derivada;
+        float kp_ativo = Kp;
+        float kd_ativo = Kd;
 
-        int pwmDireito = constrain(VELOCIDADE_BASE - saidaD, 0, 255);
-        int pwmEsquerdo = constrain(VELOCIDADE_BASE + saidaD, 0, 255);
+        switch (direcao)
+        {
+        case DirecaoDefinida::CurvaFechada:
+            kp_ativo = 0.6;
+            kd_ativo = 0.3;
+            break;
+        case DirecaoDefinida::curva:
+            kp_ativo = 0.2;
+            kd_ativo = 0.4;
+            break;
+        case DirecaoDefinida::Centro:
+            kp_ativo = 0.3;
+            kd_ativo = 0.3;
+            break;
+        default:
+            break;
+        }
+
+        // A Mágica Acontece Aqui
+        float saidaPID = (kp_ativo * erroD) + (Ki * integralErro) + (kd_ativo * derivada);
+
+        // Cinemática Diferencial: Ajusta as velocidades dos motores
+        int pwmDireito = constrain(VELOCIDADE_BASE - saidaPID, 0, 255);
+        int pwmEsquerdo = constrain(VELOCIDADE_BASE + saidaPID, 0, 255);
 
         analogWrite(motor_direito.pwm.p.enA, pwmDireito);
         analogWrite(motor_esquerdo.pwm.p.enB, pwmEsquerdo);
-    }   
+
+        erroAnterior = erroD;
+
+        return 1;
+    }
     else
     {
+        // Se está alinhado, zera a memória da integral para não dar tranco depois
         integralErro = 0;
         analogWrite(motor_direito.pwm.p.enA, VELOCIDADE_BASE);
         analogWrite(motor_esquerdo.pwm.p.enB, VELOCIDADE_BASE);
-    }
 
-    anguloAnterior = erroD;
+        erroAnterior = erroD;
+
+        return 0;
+    }
 }
 
 #endif // PID_H

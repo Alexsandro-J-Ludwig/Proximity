@@ -11,6 +11,6 @@ extern float Kd;
 extern int VELOCIDADE_BASE;
 
 // Função recebendo os motores por REFERÊNCIA (&)
-void pid(Motor &motor_direito, Motor &motor_esquerdo, unsigned long msT, int angulo);
+bool pid(Motor &motor_direito, Motor &motor_esquerdo, unsigned long msT, int angulo, int maiorDistancia);
 
 #endif // PID_H

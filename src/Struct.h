@@ -1,5 +1,5 @@
-#ifndef STRUCT.h
-#define STRUCT.h
+#ifndef STRUCT_H
+#define STRUCT_H
 
 union L298N_Motor
 {
@@ -25,6 +25,18 @@ struct Motor {
     L298N_Motor driver;
     L298N_PWM pwm;
     int pwm_atual;
+};
+
+enum Estados {
+    VOLTAR,
+    AVANCAR,
+    PROSSEGUIR
+};
+
+enum DirecaoDefinida {
+    CurvaFechada,
+    curva,
+    Centro
 };
 
 #endif

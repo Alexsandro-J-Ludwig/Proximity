@@ -1,151 +1,202 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_VL53L0X.h>
-#include <Servo.h>
+#include <ESP32Servo.h>
+
 #include "Struct.h"
 #include "PID.h"
+#include "init.h"
 
-Motor motor_direito = {
-    {{25, 32, 0, 0}},
-    {{4, 0}},
-    0};
-
-Motor motor_esquerdo = {
-    {{0, 0, 18, 17}},
-    {{0, 16}},
-    0};
-
-Adafruit_VL53L0X lox = Adafruit_VL53L0X();
-Servo meuServo;
-
-unsigned long servoDelay = 33;
+unsigned long servoDelay = 90;
 unsigned long servoTimer = 0;
 unsigned long motorDelay = 2;
 unsigned long motorTimer = 0;
+unsigned long voltarTimer = 0;
+unsigned long voltarDelay = 500;
 
-int i = 0;
+bool voltando = false;
+
+int acumulador = 36;
+
 bool servoDirection = true;
-int tofValues[5] = {};
+int tofValues[6] = {};
 int tofIndex = 0;
+int angulos[6] = {0, 36, 72, 108, 144, 180};
 int maiorDistancia = 0;
-int melhorAngulo = 0;
+int melhorAngulo = 90;
+int menorDistancia = 999;
 
-// Função para configurar o servo e sensor
-// !!! Será isolado em um header em breve !!!
-void setup_servo()
-{
-  meuServo.attach(12, 544, 2400);
+Estados estadoAtual = Estados::AVANCAR;
 
-  if (meuServo.attached())
-  {
-    Serial.println(F("Servo conectado com sucesso!"));
-  }
-  else
-  {
-    Serial.println(F("Falha ao conectar o servo!"));
-  }
-
-  meuServo.write(90); // Posição inicial do servo
-
-  if (meuServo.read() == 90)
-  {
-    Serial.println(F("Servo posicionado corretamente!"));
-  }
-  else
-  {
-    Serial.println(F("Falha ao posicionar o servo!"));
-  }
-}
-
-void setup_sensor()
-{
-  if (!Wire.begin(21, 22))
-  { // Inicialização do barramento I2C
-    Serial.println(F("Falha ao inicializar o barramento I2C!"));
-    while (1)
-      ;
-  }
-
-  lox.begin(VL53L0X_I2C_ADDR, false, &Wire, Adafruit_VL53L0X::VL53L0X_SENSE_HIGH_SPEED); // Inicialização do sensor
-
-  lox.startMeasurement(); // Inicia a medição do sensor
-}
-
-// Não faz nada :)
-void setup()
-{
-
-  Serial.begin(115200);
-}
-
-void setup1()
-{
-  while (!Serial)
-    delay(10); // para nativos USB
-
-  xTaskCreatePinnedToCore(
-      tarefaCore0, // Função que contém o código do seu loop1
-      "Varredura", // Nome da tarefa
-      4096,        // Tamanho da memória (Stack) alocada
-      NULL,        // Parâmetros para a tarefa
-      1,           // Prioridade da tarefa
-      NULL,        // Tratador da tarefa
-      0            // ID do Core (0 ou 1) -> Forçamos no Core 0!
-  );
-}
-
-void loop()
-{
-  // Aqui ficará a lógica de estados do robô
-  int currentTime = millis();
-
-  if (currentTime - motorTimer >= motorDelay)
-  {
-    motorTimer = currentTime;
-
-    pid(motor_direito, motor_esquerdo, motorDelay, melhorAngulo);
-  }
-}
+SemaphoreHandle_t xMutexRadar;
 
 void tarefaCore0(void *pvParameters)
 {
-  // Tudo o que estava no seu antigo setup1() entra aqui:
   setup_servo();
   setup_sensor();
 
-  // O loop infinito que vai rodar no Core 0 em paralelo:
   for (;;)
   {
     unsigned long currentMillis = millis();
 
+    // Faz a leitura do sensor ToF
     VL53L0X_RangingMeasurementData_t measure;
-    lox.getRangingMeasurement(&measure);
-    int tofValue = measure.RangeMilliMeter / 10;
+
+    lox.rangingTest(&measure, false);
+
+    int tofValue = 8191;
+
+    if (measure.RangeStatus != 4)
+    {
+      tofValue = measure.RangeMilliMeter;
+    }
 
     if (currentMillis - servoTimer >= servoDelay)
     {
       servoTimer = currentMillis;
 
-      i += servoDirection ? 1 : -1;
-      i = constrain(i, 0, 180);
-      if (i == 180)
-        servoDirection = false;
-      if (i == 0)
-        servoDirection = true;
+      tofValues[tofIndex] = tofValue;
+      meuServo.write(angulos[tofIndex]);
 
-      if (i % 5 == 0)
+      // Guarda se ESTE índice (que acabamos de escrever) é uma ponta da varredura.
+      // Precisa ser checado ANTES de mover o índice, senão o valor da ponta
+      // (36° ou 180°) nunca é considerado no cálculo do melhor ângulo.
+      bool cheguei_na_ponta = (tofIndex == 0 || tofIndex == 5);
+
+      // Atualiza o índice para o próximo ciclo
+      if (servoDirection)
       {
-        meuServo.write(i);
-        int distanciaTratada = (tofValue > 50) ? 50 : tofValue;
+        tofIndex++;
+        if (tofIndex >= 5)
+          servoDirection = false; // Bateu no fim (180°) inverter
+      }
+      else
+      {
+        tofIndex--;
+        if (tofIndex <= 0)
+          servoDirection = true; // Bateu no começo (0°) inverter
+      }
 
-        if (distanciaTratada > maiorDistancia)
+      if (cheguei_na_ponta)
+      {
+        int tempMaiorDistancia = 0;
+        int tempMenorDistancia = 9999;
+        int tempMelhorAngulo = 90;
+
+        for (int c = 0; c < 6; c++)
         {
-          maiorDistancia = distanciaTratada;
-          melhorAngulo = i;
+          if (tofValues[c] > tempMaiorDistancia)
+          {
+            tempMaiorDistancia = tofValues[c];
+            tempMelhorAngulo = angulos[c];
+          }
+          // Só aceita a menor distância se for maior que 0 (ignora falhas e fantasmas)
+          if (tofValues[c] > 0 && tofValues[c] < tempMenorDistancia)
+          {
+            tempMenorDistancia = tofValues[c];
+          }
+        }
+
+        if (xSemaphoreTake(xMutexRadar, pdMS_TO_TICKS(6)) == pdTRUE)
+        {
+          maiorDistancia = tempMaiorDistancia;
+          menorDistancia = tempMenorDistancia;
+          melhorAngulo = tempMelhorAngulo;
+          xSemaphoreGive(xMutexRadar);
+        }
+
+        // Limpa o array para a próxima varredura
+        for (int r = 0; r < 6; r++)
+        {
+          tofValues[r] = 0;
         }
       }
     }
-    // Dica de ouro para o ESP32: Um delay mínimo pro watchdog do sistema respirar
+
     vTaskDelay(1 / portTICK_PERIOD_MS);
+  }
+}
+
+void setup()
+{
+  Serial.begin(115200);
+  setup_motores();
+
+  xMutexRadar = xSemaphoreCreateMutex();
+
+  if (xMutexRadar == NULL)
+  {
+    Serial.println("Falha ao criar o mutex!");
+    while (1)
+      ;
+  }
+
+  xTaskCreatePinnedToCore(
+      tarefaCore0, "Varredura", 4096, NULL, 1, NULL, 0);
+}
+
+void loop()
+{
+  unsigned long currentTime = millis();
+
+  if (currentTime - motorTimer >= motorDelay)
+  {
+    motorTimer = currentTime;
+    int anguloAlvo = 90;
+
+    if (xSemaphoreTake(xMutexRadar, pdMS_TO_TICKS(2)) == pdTRUE)
+    {
+      anguloAlvo = melhorAngulo;
+      xSemaphoreGive(xMutexRadar);
+    }
+
+    if ((maiorDistancia < 300 || menorDistancia < 100) && !voltando)
+    {
+      estadoAtual = Estados::VOLTAR;
+      voltando = true;
+      voltarTimer = currentTime; // marca o momento em que entrou em ré
+    }
+
+    // Sai da ré após 500 ms
+    if (voltando && (currentTime - voltarTimer >= voltarDelay))
+    {
+      voltando = false;
+
+      // Decide o próximo estado
+      if (maiorDistancia < 700)
+        estadoAtual = Estados::AVANCAR;
+      else
+        estadoAtual = Estados::PROSSEGUIR;
+    }
+
+    switch (estadoAtual)
+    {
+    case Estados::AVANCAR:
+      digitalWrite(motor_direito.driver.p.motorA_in1, HIGH);
+      digitalWrite(motor_direito.driver.p.motorA_in2, LOW);
+      digitalWrite(motor_esquerdo.driver.p.motorB_in1, LOW);
+      digitalWrite(motor_esquerdo.driver.p.motorB_in2, HIGH);
+      pid(motor_direito, motor_esquerdo, currentTime, anguloAlvo, maiorDistancia);
+      break;
+    case Estados::VOLTAR:
+      digitalWrite(motor_direito.driver.p.motorA_in1, LOW);
+      digitalWrite(motor_direito.driver.p.motorA_in2, HIGH);
+      digitalWrite(motor_esquerdo.driver.p.motorB_in1, HIGH);
+      digitalWrite(motor_esquerdo.driver.p.motorB_in2, LOW);
+
+      pid(motor_direito, motor_esquerdo, currentTime, anguloAlvo, maiorDistancia);
+      break;
+    case Estados::PROSSEGUIR:
+      digitalWrite(motor_direito.driver.p.motorA_in1, HIGH);
+      digitalWrite(motor_direito.driver.p.motorA_in2, LOW);
+      digitalWrite(motor_esquerdo.driver.p.motorB_in1, LOW);
+      digitalWrite(motor_esquerdo.driver.p.motorB_in2, HIGH);
+
+      analogWrite(motor_direito.pwm.p.enA, VELOCIDADE_BASE);
+      analogWrite(motor_esquerdo.pwm.p.enB, VELOCIDADE_BASE);
+      break;
+    default:
+      break;
+    }
   }
 }
